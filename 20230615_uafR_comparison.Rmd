@@ -1,0 +1,213 @@
+---
+title: "20230502_uafR_test_Liz"
+author: "Olivia Trase"
+date: "2023-05-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+#### Testing the uafR Package on maize volatile data ####
+
+Elizabeth Davidson-Lowe ran an experiment using maize, western corn rootworm, and nematodes. We analyzed the aboveground volatiles using GC-MS. 
+
+
+## Loading in libraries and data
+```{r}
+## install packages if needed
+# install.packages("devtools")
+# if (!require("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install("fmcsR")
+# devtools::install_github("castratton/uafR")
+
+## load libraries
+library(fmcsR)
+library(ChemmineR)
+library(uafR)
+library(vegan)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(reshape2)
+library(gt)
+
+```
+
+```{r}
+## load in data
+voc <-read.csv("20230411_MassHunter_Hits.csv")
+head(voc)
+```
+This data was exported from MassHunter using default deconvolution settings and the chemecol, Adams, and NIST17 spectral libraries.
+
+```{r}
+Nate <- read.csv("AMFWCREPN.csv")
+head(Nate)
+## clean data
+voc$Compound.Name <- gsub("?","",voc$Compound.Name, fixed = TRUE)
+
+```
+This data was compiled and peaks were manually identified and peak areas calculated by Nate McCartney.
+
+## Run spreadOut, mzExacto, and standardifyIt
+Can load in Target_Compounds.csv if spreadOut takes too long
+```{r}
+## uafR test of SpreadOut and mzExacto
+## load sample library
+library_dat <- library_data 
+
+## spread out data, interface with pubchem
+voc_spread <- spreadOut(voc) # takes like 6-7 hours
+
+## name compounds of interest
+## these compounds were originally identified by Nate
+query_chemicals <- c("(E)-beta-ocimene", "(Z)-3-hexenyl acetate", "1-dodecanol", "2,6-di-tert-butyl-1","4-benzoquinone",
+                     "2-heptanone", "3-heptanone", "alpha-pinene", "benzaldehyde", "beta-pinene", "camphene", "camphor", 
+                     "Cumene", "delta-3-carene", "hexanal 2-ethyl-", "limonene", "linalool", "methyl salicylate", "naphthalene", 
+                     "n-decanal", "n-heptanal", "n-hexanal", "n-nonanal", "n-octanal", "n-octane", "nonyl acetate",
+                     "n-tridecan-1-ol","p-cymene" , "pentanone<4-hydroxy-4-methyl-2->", "sabinene", "tetradecanal")
+print(query_chemicals)
+## mzExacto: compile queried chemicals into matrix where rows are the compounds and columns are samples
+voc_crunch <- mzExacto(data_in = voc_spread, chemicals = query_chemicals)
+# write.csv(voc_crunch, "Target_Compounds.csv") # save a csv midway through
+
+## Normalize uafR compounds
+# voc_crunch<-read.csv("Target_Compounds.csv") # load saved csv
+voc_normalized <- standardifyIt(data_in = voc_crunch, standard_type = "Internal", 
+                                standard_used = "nonyl acetate", 
+                                IS_ng = 200, IS_uL = 5) # added 5 microliters of 40ng/ul nonyl-acetate standard
+
+```
+These are the compounds that Nate identified 
+
+## Comparison between uafR and Manual identification
+```{r}
+## clean up Nate's data
+Nate$Analyte <- trimws(Nate$Analyte, "r")
+
+## pivot the df to get rows as compounds, columns as samples, values as quantity in ng
+Nate_pivot <- pivot_wider(data = Nate, 
+                          names_from = Filename, 
+                          values_from = Quantity, 
+                          id_cols = Analyte,
+                          names_prefix = "")
+
+## get the retention times for each compound
+Nate_pivotRT <- pivot_wider(data = Nate, 
+                          names_from = Filename, 
+                          values_from = RT, 
+                          id_cols = Analyte,
+                          names_prefix = "")
+
+## remove the controls
+Nate_pivotRT <- Nate_pivotRT[c(1,10:68)]
+Nate_pivotRT[Nate_pivotRT == 0] <- NA # 0 retention time is really NA
+
+## get the average retention time
+RTmeans <- rowMeans(Nate_pivotRT[c(2:60)],na.rm=TRUE)
+apply(Nate_pivotRT[c(2:60)], 1, sd,na.rm=TRUE)   # check that standard deviation is not huge, looks good
+
+## Add RT column for rounded values
+Nate_pivot$RT <- round(RTmeans,2)
+
+## make column names between two dataframes the same
+colnames(Nate_pivot)<-gsub("-",".",colnames(Nate_pivot))
+names(Nate_pivot)[names(Nate_pivot) == 'Analyte'] <- 'Compound'
+
+# ## get list of sample names
+# Nate_samples <- colnames(Nate_pivot[c(10:68)])
+# voc_samples <- colnames(voc_normalized[c(6:65)])
+
+## call columns of interest
+Nate_new <- Nate_pivot[c(1,10:69)] 
+VOC_new <- voc_normalized[c(2,4,6:64)] # remove T2-5
+
+## Get compounds that do not match between two datasets
+print(c(setdiff(VOC_new$Compound,Nate_new$Compound),setdiff(Nate_new$Compound,VOC_new$Compound)))
+
+## Rename compounds that are the same
+Nate_new$Compound<-gsub("cumene","Cumene",Nate_new$Compound)
+Nate_new$Compound<-gsub("napthalene","naphthalene",Nate_new$Compound)
+
+## Remove rest
+remove_list <- c(setdiff(VOC_new$Compound,Nate_new$Compound),setdiff(Nate_new$Compound,VOC_new$Compound))
+print(remove_list)
+Nate_new1 <- Nate_new[ !grepl(paste(remove_list, collapse="|"), Nate_new$Compound),]
+
+# Check that datasets match
+setdiff(colnames(Nate_new1),colnames(VOC_new))
+setdiff(VOC_new$Compound,Nate_new1$Compound)
+setdiff(Nate_new1$Compound,VOC_new$Compound) # not sure why it isn't removing (E)-beta-ocimene
+```
+Differences between uafR and Nate for Liz’s data
+
+```{r}
+Nate_raw <- mutate_all(as.data.frame(Nate_new1[c(2:60)]), function(x) as.numeric(as.character(x)))
+Nate_raw$Compound <- Nate_new1$Compound
+Nate_raw$RT <- Nate_new1$RT
+
+VOC_raw <- mutate_all(as.data.frame(VOC_new[c(2:60)]), function(x) as.numeric(as.character(x)))
+VOC_raw$Compound <- VOC_new$Compound
+VOC_raw$RT <- VOC_new$RT
+
+# Loop through both dataframes for each sample to get differences in retention time and quantity
+MAGdiff <- list()
+for (i in colnames(Nate_raw)[1:59]){
+  sample = i
+  df1 <- subset(Nate_raw,select=c("Compound","RT",sample))
+  colnames(df1)<-c("Compound","RT","sample")
+  df1$sample<-as.numeric(df1$sample)
+  df1$data <- "Nate"
+  row.names(df1)<-NULL
+  if(is.null(VOC_raw[[sample]])){
+    next
+  }
+  df2 <- subset(VOC_raw,select=c("Compound","RT",sample))
+  colnames(df2)<-c("Compound","RT","sample")
+  df2$sample<-as.numeric(df2$sample)
+  df2$data <- "uafR"
+  row.names(df2)<-NULL
+  df4 <- merge(df1,df2,by="Compound")
+  RTdiff <- df4$RT.x - df4$RT.y
+  df4$diff2 <- df4$sample.x - df4$sample.y
+  MAGdiff[[i]]<-df4$diff2
+}
+
+# Make a dataframe showing average differences in RT and quantity
+DiffDF <- data.frame(do.call(cbind, MAGdiff))
+DiffDF$Compound <- df4$Compound
+DiffDF$RTdiff <- RTdiff
+DiffDF_melted <- melt(DiffDF, id=c("Compound","RTdiff"))
+Differences_df <- DiffDF_melted %>% dplyr::group_by(Compound) %>% dplyr::summarise(RTdiff_avg=mean(RTdiff),MAGdiff_avg=mean(value))
+
+# create a table with compounds that either showed large differences in RT or quantity
+Differences_df[(abs(Differences_df$RTdiff_avg)>0.1)|(abs(Differences_df$MAGdiff_avg)>10),] %>% 
+  mutate(across(c('RTdiff_avg', 'MAGdiff_avg'), round, 2))%>%
+  dplyr::rename("Average difference in retention time" = "RTdiff_avg","Average difference in peak area" = "MAGdiff_avg") %>% 
+  gt()
+
+```
+
+
+In most cases Nate’s proportional quantities are greater than uafR’s, but RT is generally the same
+The ones where the quantity is significantly higher in uafR samples but RT is the same:
+
+- 1-dodecanol
+- alpha-pinene
+-	Methyl salicylate
+- n-octane
+
+The ones where the RT and quantity is different (uafR vs Nate)
+
+-	Cumene (8.11 vs 7.5) 0.61
+-	Delta-3-carene (9.5  vs 8.99) 0.51
+-	Linalool (8.98  vs 10.42) -1.43
+- n-tridecan-1-ol (16.6 vs 16.9)
+-	P-cymene (10.37 vs. 9.23) 1.14
+-	Sabinene (8.75 vs 8.36) 0.39 
+
+
+
